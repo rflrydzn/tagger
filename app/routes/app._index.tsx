@@ -10,7 +10,11 @@ import {
 
 import { authenticate } from "../shopify.server";
 
-// --- TYPESCRIPT INTERFACES ---
+// --- CONSTANTS & TYPESCRIPT INTERFACES ---
+
+// Set the page limit for iterative fetching (Shopify limit is 250, but 50-100 is safer for rate limits)
+const FETCH_PAGE_LIMIT = 50;
+const PREVIEW_COUNT = 10; // Number of items to display in the preview list
 
 interface FilterState {
   keyword: string;
@@ -49,6 +53,7 @@ interface ActionData {
 // ============================================================================
 // UTILITIES
 // ============================================================================
+
 const buildProductQuery = ({
   keyword,
   productType,
@@ -57,13 +62,11 @@ const buildProductQuery = ({
   const queryParts: string[] = [];
 
   if (keyword.trim()) {
-    // Escape special characters in keyword
     const escaped = keyword.trim().replace(/['"]/g, "");
     queryParts.push(`title:*${escaped}*`);
   }
 
   if (productType.trim()) {
-    // Escape special characters in product type
     const escaped = productType.trim().replace(/'/g, "\\'");
     queryParts.push(`product_type:'${escaped}'`);
   }
@@ -76,8 +79,78 @@ const buildProductQuery = ({
   return queryParts.length > 0 ? queryParts.join(" AND ") : undefined;
 };
 
+/**
+ * CORE PAGINATION LOGIC: Iteratively fetches all products matching the query.
+ * This function is used by the Action to ensure ALL products are processed.
+ */
+async function fetchProductsIteratively({
+  admin,
+  queryString,
+}: {
+  admin: any;
+  queryString: string;
+}): Promise<Product[]> {
+  let allProducts: Product[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  // Loop until hasNextPage is false, processing products in batches
+  while (hasNextPage) {
+    const query = `
+            #graphql
+            query getProducts($query: String, $cursor: String) {
+                products(first: ${FETCH_PAGE_LIMIT}, query: $query, after: $cursor) {
+                    edges {
+                        node {
+                            id
+                            title
+                            tags
+                        }
+                    }
+                    pageInfo {
+                        hasNextPage
+                        endCursor
+                    }
+                }
+            }
+        `;
+
+    try {
+      const response = await admin.graphql(query, {
+        variables: { query: queryString, cursor },
+      });
+      const data = await response.json();
+
+      if (data.errors || data.data?.products === undefined) {
+        console.error("GraphQL Errors during paginated fetch:", data.errors);
+        throw new Error("Failed to fetch products during pagination.");
+      }
+
+      const pageProducts: Product[] = data.data.products.edges.map(
+        (edge: any) => edge.node,
+      );
+      allProducts.push(...pageProducts);
+
+      hasNextPage = data.data.products.pageInfo.hasNextPage;
+      cursor = data.data.products.pageInfo.endCursor;
+
+      // Simple delay to respect general rate limits between page fetches
+      if (hasNextPage) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    } catch (error) {
+      console.error("Critical error during paginated fetch:", error);
+      // Stop fetching on critical error
+      hasNextPage = false;
+      throw error;
+    }
+  }
+
+  return allProducts;
+}
+
 // ============================================================================
-// LOADER - Handles product filtering and preview (MAX 250 PRODUCTS)
+// LOADER - Handles product filtering and preview
 // ============================================================================
 export const loader = async ({
   request,
@@ -104,10 +177,11 @@ export const loader = async ({
   }
 
   try {
+    // Only fetch the first page for fast preview
     const query = `
       #graphql
       query getProducts($query: String) {
-        products(first: 250, query: $query) {
+        products(first: ${FETCH_PAGE_LIMIT}, query: $query) {
           edges {
             node {
               id
@@ -118,6 +192,9 @@ export const loader = async ({
               tags
             }
           }
+          pageInfo {
+             hasNextPage
+          }
         }
       }
     `;
@@ -127,7 +204,6 @@ export const loader = async ({
     });
     const data = await response.json();
 
-    // Check for GraphQL errors
     if (data.errors) {
       console.error("GraphQL errors in loader:", data.errors);
       return {
@@ -142,8 +218,15 @@ export const loader = async ({
     const allProducts: Product[] =
       data.data?.products?.edges.map((edge: any) => edge.node) || [];
 
-    const productsForDisplay = allProducts.slice(0, 10);
-    const totalCount = allProducts.length;
+    // Estimate total count for the user
+    let totalCount = allProducts.length;
+    if (data.data?.products?.pageInfo?.hasNextPage) {
+      // If there's a next page, signal that there are potentially many more
+      totalCount = allProducts.length + 500;
+    }
+
+    // Display only the first 10 for the preview list
+    const productsForDisplay = allProducts.slice(0, PREVIEW_COUNT);
 
     return {
       products: productsForDisplay,
@@ -165,7 +248,7 @@ export const loader = async ({
 };
 
 // ============================================================================
-// ACTION - Handles bulk tag application (MAX 250 PRODUCTS)
+// ACTION - Handles bulk tag application (NOW PAGINATED)
 // ============================================================================
 export const action = async ({
   request,
@@ -194,56 +277,26 @@ export const action = async ({
   }
 
   if (actionIntent === "applyTag") {
-    // 1. Fetch ALL matching product IDs (MAX 250)
-    const fetchQuery = `
-      #graphql
-      query getProducts($query: String) {
-        products(first: 250, query: $query) {
-          edges {
-            node {
-              id
-              title
-              tags
-            }
-          }
-        }
-      }
-    `;
-
+    // 1. Fetch ALL matching product IDs using the new PAGINATION utility
     let allProducts: Product[] = [];
     try {
-      const response = await admin.graphql(fetchQuery, {
-        variables: { query: queryString },
-      });
-      const data = await response.json();
-
-      // Check for GraphQL errors
-      if (data.errors) {
-        console.error("GraphQL errors during fetch:", data.errors);
-        return {
-          success: false,
-          error: `Fetch error: ${data.errors[0].message}`,
-        };
-      }
-
-      allProducts =
-        data.data?.products?.edges.map((edge: any) => edge.node) || [];
-
-      if (allProducts.length === 0) {
-        return {
-          success: false,
-          error: "No products found matching your filters.",
-        };
-      }
+      allProducts = await fetchProductsIteratively({ admin, queryString });
     } catch (e) {
-      console.error("Error during product fetch:", e);
+      console.error("Error during paginated product fetch:", e);
       return {
         success: false,
-        error: `Failed to fetch products: ${e instanceof Error ? e.message : "Unknown error"}`,
+        error: `Failed to fetch all products for tagging. Check console for details: ${e instanceof Error ? e.message : "Unknown error"}`,
       };
     }
 
-    // 2. Apply tags to products using productUpdate (more reliable than tagsAdd)
+    if (allProducts.length === 0) {
+      return {
+        success: false,
+        error: "No products found matching your filters to tag.",
+      };
+    }
+
+    // 2. Apply tags to products using productUpdate (robust error handling and rate limiting is kept)
     let updated = 0;
     let alreadyHadTag = 0;
     let failed = 0;
@@ -251,7 +304,6 @@ export const action = async ({
     const MAX_RETRIES = 3;
     const BASE_DELAY = 500;
 
-    // ✅ FIX: Use productUpdate instead of tagsAdd
     const updateMutation = `
       #graphql
       mutation productUpdate($input: ProductInput!) {
@@ -272,7 +324,6 @@ export const action = async ({
     const failedProducts: string[] = [];
 
     for (const product of allProducts) {
-      // Check if product already has the tag (case-insensitive)
       const hasTag = product.tags.some(
         (tag) => tag.toLowerCase() === TAG.toLowerCase(),
       );
@@ -286,7 +337,7 @@ export const action = async ({
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
-          // ✅ FIX: Add tag to existing tags array
+          // Add tag to existing tags array
           const newTags = [...product.tags, TAG];
 
           const updateResponse = await admin.graphql(updateMutation, {
@@ -300,7 +351,6 @@ export const action = async ({
 
           const updateData = await updateResponse.json();
 
-          // Check for GraphQL errors
           if (updateData.errors) {
             console.error(
               `GraphQL error for ${product.id}:`,
@@ -311,14 +361,9 @@ export const action = async ({
             break;
           }
 
-          // Check for user errors
           if (updateData.data?.productUpdate?.userErrors?.length > 0) {
             const errorMessage =
               updateData.data.productUpdate.userErrors[0].message;
-            console.error(
-              `Failed to update product ${product.id}:`,
-              errorMessage,
-            );
 
             if (!specificErrorMessage) {
               const productIdShort = product.id.split("/").pop();
@@ -340,11 +385,9 @@ export const action = async ({
           );
 
           if (attempt < MAX_RETRIES - 1) {
-            // Exponential backoff
             const delay = BASE_DELAY * Math.pow(2, attempt);
             await new Promise((resolve) => setTimeout(resolve, delay));
           } else {
-            // Failed after all retries
             productUpdateFailed = true;
             failedProducts.push(product.title);
 
@@ -359,7 +402,7 @@ export const action = async ({
         failed++;
       }
 
-      // ✅ FIX: Add delay between requests to respect rate limits
+      // Add delay between requests to respect rate limits
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
@@ -369,7 +412,7 @@ export const action = async ({
       : null;
 
     return {
-      success: failed < allProducts.length, // Success if at least some products updated
+      success: failed < allProducts.length,
       summary: {
         updated,
         alreadyHadTag,
@@ -446,9 +489,15 @@ export default function Index() {
     setShowSummary(false);
     setSummary(null);
 
+    // Adjusted confirmation message to indicate the potential for more products
+    const totalCountText =
+      loaderData.totalCount > FETCH_PAGE_LIMIT
+        ? `${loaderData.totalCount.toLocaleString()}+`
+        : loaderData.totalCount.toString();
+
     if (
       !window.confirm(
-        `Are you sure you want to apply the tag "${tagToApply.trim()}" to ${loaderData.totalCount} products?`,
+        `Are you sure you want to apply the tag "${tagToApply.trim()}" to all ${totalCountText} matched products?`,
       )
     ) {
       return;
@@ -518,15 +567,18 @@ export default function Index() {
     );
   };
 
+  const totalCountDisplay =
+    loaderData.totalCount > FETCH_PAGE_LIMIT
+      ? `${loaderData.totalCount.toLocaleString()}+`
+      : loaderData.totalCount.toString();
+
   return (
     <div style={{ padding: "20px", maxWidth: "1200px", margin: "0 auto" }}>
-      <h1>Product Tagger (Functional Only)</h1>
+      <h1>Product Tagger (With Pagination & Rate Limiting)</h1>
       <p>
-        The goal is to **filter** products and **bulk-add a tag**.
-        <strong>
-          {" "}
-          (Currently limited to 250 products, requires `write_products` scope).
-        </strong>
+        The bulk tagging now uses **cursor-based pagination** to handle **1,000+
+        products** and includes a **500ms delay** between product updates to
+        respect rate limits. Requires `write_products` scope.
       </p>
 
       {/* Loader Error */}
@@ -583,7 +635,7 @@ export default function Index() {
 
       {/* FILTERS AND TAG CARDS */}
       <div style={{ marginTop: "20px" }}>
-        {/* FILTERS CARD */}
+        {/* FILTERS CARD - ... (rest of the card content remains the same) */}
         <div
           style={{
             border: "1px solid #ddd",
@@ -726,12 +778,12 @@ export default function Index() {
               {isPreviewing ? "Loading Preview..." : "Preview Matches"}
             </button>
 
-            <s-button
+            <button
               onClick={handleApplyTag}
               disabled={
                 !loaderData.previewMode ||
                 !tagToApply.trim() ||
-                loaderData.totalCount === 0 ||
+                loaderData.products.length === 0 ||
                 isSubmitting
               }
               style={{
@@ -743,14 +795,14 @@ export default function Index() {
                 cursor:
                   !loaderData.previewMode ||
                   !tagToApply.trim() ||
-                  loaderData.totalCount === 0 ||
+                  loaderData.products.length === 0 ||
                   isSubmitting
                     ? "not-allowed"
                     : "pointer",
                 opacity:
                   !loaderData.previewMode ||
                   !tagToApply.trim() ||
-                  loaderData.totalCount === 0 ||
+                  loaderData.products.length === 0 ||
                   isSubmitting
                     ? 0.5
                     : 1,
@@ -758,8 +810,8 @@ export default function Index() {
             >
               {isApplyingTag
                 ? `Applying Tag...`
-                : `Apply Tag (${loaderData.totalCount} Products)`}
-            </s-button>
+                : `Apply Tag (Process ${totalCountDisplay} Products)`}
+            </button>
           </div>
         </div>
       </div>
@@ -801,8 +853,8 @@ export default function Index() {
                 <>
                   <p style={{ marginBottom: "16px", fontWeight: "bold" }}>
                     Showing first {loaderData.products.length} of{" "}
-                    <strong>{loaderData.totalCount}</strong> total matching
-                    products.
+                    <strong>{totalCountDisplay}</strong> estimated total
+                    matching products.
                   </p>
                   <ul style={{ listStyle: "none", padding: 0 }}>
                     {loaderData.products.map((item) => {
