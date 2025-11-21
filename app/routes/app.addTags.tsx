@@ -7,16 +7,16 @@ import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useState, useCallback, useEffect } from "react";
 import { useSubmit, useNavigation, useActionData } from "react-router";
-import { LegacyCard, EmptyState } from "@shopify/polaris";
+import { LegacyCard, EmptyState, Button } from "@shopify/polaris";
 
 import { authenticate } from "../shopify.server";
 
-const FETCH_PAGE_LIMIT = 50;
+const FETCH_PAGE_LIMIT = 250;
 const PREVIEW_COUNT = 10;
 
 type GraphQLResponse = {
   data?: any;
-  errors?: { message: string; locations: any }[]; // Define the expected errors structure
+  errors?: { message: string; locations: any }[];
 };
 
 interface FilterState {
@@ -52,10 +52,6 @@ interface ActionData {
     tag: string;
   };
 }
-
-// ============================================================================
-// UTILITIES
-// ============================================================================
 
 const buildProductQuery = ({
   keyword,
@@ -102,6 +98,8 @@ async function fetchProductsIteratively({
             node {
               id
               title
+              handle
+              productType
               tags
             }
           }
@@ -145,9 +143,6 @@ async function fetchProductsIteratively({
   return allProducts;
 }
 
-// ============================================================================
-// LOADER
-// ============================================================================
 export const loader = async ({
   request,
 }: LoaderFunctionArgs): Promise<LoaderData> => {
@@ -173,51 +168,13 @@ export const loader = async ({
   }
 
   try {
-    const query = `
-      #graphql
-      query getProducts($query: String) {
-        products(first: ${FETCH_PAGE_LIMIT}, query: $query) {
-          edges {
-            node {
-              id
-              title
-              handle
-              productType
-              status
-              tags
-            }
-          }
-          pageInfo {
-            hasNextPage
-          }
-        }
-      }
-    `;
+    // Fetch all products to get exact count
+    const allProducts = await fetchProductsIteratively({ admin, queryString });
 
-    const response = await admin.graphql(query, {
-      variables: { query: queryString },
-    });
-    const data = (await response.json()) as GraphQLResponse;
+    // Get exact count
+    const totalCount = allProducts.length;
 
-    if (data.errors) {
-      console.error("GraphQL errors in loader:", data.errors);
-      return {
-        products: [],
-        totalCount: 0,
-        filters,
-        previewMode: false,
-        error: `Query error: ${data.errors[0].message}`,
-      };
-    }
-
-    const allProducts: Product[] =
-      data.data?.products?.edges.map((edge: any) => edge.node) || [];
-
-    let totalCount = allProducts.length;
-    if (data.data?.products?.pageInfo?.hasNextPage) {
-      totalCount = allProducts.length + 500;
-    }
-
+    // Only show preview count for display
     const productsForDisplay = allProducts.slice(0, PREVIEW_COUNT);
 
     return {
@@ -239,9 +196,6 @@ export const loader = async ({
   }
 };
 
-// ============================================================================
-// ACTION
-// ============================================================================
 export const action = async ({
   request,
 }: ActionFunctionArgs): Promise<ActionData> => {
@@ -440,7 +394,7 @@ export default function AddTags() {
 
   const totalCountText =
     loaderData.totalCount > FETCH_PAGE_LIMIT
-      ? `${loaderData.totalCount.toLocaleString()}+`
+      ? `${loaderData.totalCount.toLocaleString()}`
       : loaderData.totalCount.toString();
 
   useEffect(() => {
@@ -501,10 +455,7 @@ export default function AddTags() {
     submit(new URLSearchParams(), { method: "get" });
   }, [submit]);
 
-  const totalCountDisplay =
-    loaderData.totalCount > FETCH_PAGE_LIMIT
-      ? `${loaderData.totalCount.toLocaleString()}+`
-      : loaderData.totalCount.toString();
+  const totalCountDisplay = loaderData.totalCount.toLocaleString();
 
   return (
     <s-page heading="Product Tagger">
@@ -516,8 +467,6 @@ export default function AddTags() {
               <s-text>{loaderData.error}</s-text>
             </s-banner>
           )}
-
-          {/* Success / Error Banner */}
 
           <s-banner
             tone={
@@ -717,8 +666,8 @@ export default function AddTags() {
         />
         <s-text-field
           label="Search by collection"
-          value={productType}
-          onChange={(e) => setCollectionHandle(e.currentTarget.value)}
+          // value={collectionHandle}
+          // onChange={(e) => setCollectionHandle(e.currentTarget.value)}
           placeholder="e.g., summer-collection"
           disabled={isSubmitting}
         />
@@ -726,10 +675,11 @@ export default function AddTags() {
           variant="primary"
           onClick={handlePreview}
           loading={isPreviewing}
-          disabled={isApplyingTag || !filtersSet}
+          disabled={isApplyingTag}
         >
           Preview Matches
         </s-button>
+
         <s-button
           variant="secondary"
           onClick={handleClearFilters}
@@ -753,7 +703,6 @@ export default function AddTags() {
           loading={isApplyingTag}
           disabled={
             !loaderData.previewMode ||
-            !tagToApply.trim() ||
             loaderData.products.length === 0 ||
             isSubmitting
           }
@@ -762,6 +711,7 @@ export default function AddTags() {
             ? "Applying Tag..."
             : `Apply Tag (${totalCountDisplay} Products)`}
         </s-button>
+        {/* <img src="https://cdn.shopify.com/s/assets/admin/checkout/settings-customizecart-705f57c725ac05be5a34ec20c05b94298cb8afd10aac7bd9c7ad02030f48cfa0.svg" /> */}
       </s-section>
 
       {/* <s-layout-section>
