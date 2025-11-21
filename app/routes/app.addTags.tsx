@@ -5,9 +5,9 @@ import type {
 } from "react-router";
 import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { useState, useCallback, useEffect } from "react";
 import { useSubmit, useNavigation, useActionData } from "react-router";
+import { LegacyCard, EmptyState } from "@shopify/polaris";
 
 import { authenticate } from "../shopify.server";
 
@@ -433,6 +433,11 @@ export default function AddTags() {
   const filtersSet =
     !!keyword.trim() || !!productType.trim() || !!collectionHandle.trim();
 
+  const totalCountText =
+    loaderData.totalCount > FETCH_PAGE_LIMIT
+      ? `${loaderData.totalCount.toLocaleString()}+`
+      : loaderData.totalCount.toString();
+
   useEffect(() => {
     if (actionData) {
       setSummary(actionData.summary || { error: actionData.error });
@@ -463,19 +468,6 @@ export default function AddTags() {
   const handleApplyTag = useCallback(() => {
     setShowSummary(false);
     setSummary(null);
-
-    const totalCountText =
-      loaderData.totalCount > FETCH_PAGE_LIMIT
-        ? `${loaderData.totalCount.toLocaleString()}+`
-        : loaderData.totalCount.toString();
-
-    if (
-      !window.confirm(
-        `Are you sure you want to apply the tag "${tagToApply.trim()}" to all ${totalCountText} matched products?`,
-      )
-    ) {
-      return;
-    }
 
     const formData = new FormData();
     formData.append("action", "applyTag");
@@ -510,253 +502,266 @@ export default function AddTags() {
       : loaderData.totalCount.toString();
 
   return (
-    <s-page
-      heading="Product Tagger"
-      subtitle="Filter products and bulk-add tags with intelligent pagination"
-    >
-      {/* Info Banner */}
-      <s-banner tone="info">
-        <s-box paddingBlock="200">
-          <s-text variant="bodyMd">
-            <strong>Features:</strong> Cursor-based pagination for 1,000+
-            products • 500ms rate limit delays • Idempotent tag application
-          </s-text>
-        </s-box>
-      </s-banner>
-
-      {/* Loader Error */}
-      {loaderData.error && (
-        <s-banner tone="critical" marginBlock="400">
-          <s-text variant="bodyMd" fontWeight="semibold">
-            Error Loading Products
-          </s-text>
-          <s-text variant="bodyMd">{loaderData.error}</s-text>
-        </s-banner>
-      )}
-
-      {/* Success / Error Banner */}
+    <s-page heading="Product Tagger">
       {showSummary && summary && (
-        <s-banner
-          tone={
-            summary.error
-              ? summary.updated > 0
-                ? "warning"
-                : "critical"
-              : "success"
-          }
-          marginBlock="400"
-        >
-          <s-text variant="bodyMd" fontWeight="semibold">
-            {summary.error && summary.updated === 0
-              ? "Tagging Action Failed"
-              : summary.error
-                ? "Tagging Completed with Errors"
-                : "Tag Applied Successfully!"}
-          </s-text>
-          <s-box paddingBlockStart="200">
-            {summary.error && summary.updated === 0 ? (
-              <s-text variant="bodyMd">
-                <strong>Error Details:</strong> {summary.error}
-              </s-text>
-            ) : summary.error ? (
-              <>
-                <s-text variant="bodyMd">
-                  Tag <strong>"{summary.tag}"</strong> partially applied to{" "}
+        <s-section>
+          {loaderData.error && (
+            <s-banner tone="critical">
+              <s-text>Error Loading Products</s-text>
+              <s-text>{loaderData.error}</s-text>
+            </s-banner>
+          )}
+
+          {/* Success / Error Banner */}
+
+          <s-banner
+            tone={
+              summary.error
+                ? summary.updated > 0
+                  ? "warning"
+                  : "critical"
+                : "success"
+            }
+          >
+            <s-text>
+              {summary.error && summary.updated === 0
+                ? "Tagging Action Failed"
+                : summary.error
+                  ? "Tagging Completed with Errors"
+                  : "Tag Applied Successfully!"}
+            </s-text>
+            <s-box>
+              {summary.error && summary.updated === 0 ? (
+                <s-text>
+                  <strong>Error Details:</strong> {summary.error}
+                </s-text>
+              ) : summary.error ? (
+                <>
+                  <s-text>
+                    Tag <strong>"{summary.tag}"</strong> partially applied to{" "}
+                    {summary.total} products: <strong>{summary.updated}</strong>{" "}
+                    updated, <strong>{summary.alreadyHadTag}</strong> already
+                    had the tag (skipped), <strong>{summary.failed}</strong>{" "}
+                    failed.
+                  </s-text>
+                  <s-box>
+                    <s-text tone="critical">
+                      <strong>Error Details:</strong> {summary.error}
+                    </s-text>
+                  </s-box>
+                </>
+              ) : (
+                <s-text>
+                  Tag <strong>"{summary.tag}"</strong> applied to{" "}
                   {summary.total} products: <strong>{summary.updated}</strong>{" "}
                   updated, <strong>{summary.alreadyHadTag}</strong> already had
                   the tag (skipped), <strong>{summary.failed}</strong> failed.
                 </s-text>
-                <s-box paddingBlockStart="200">
-                  <s-text variant="bodyMd" tone="critical">
-                    <strong>Error Details:</strong> {summary.error}
-                  </s-text>
-                </s-box>
-              </>
-            ) : (
-              <s-text variant="bodyMd">
-                Tag <strong>"{summary.tag}"</strong> applied to {summary.total}{" "}
-                products: <strong>{summary.updated}</strong> updated,{" "}
-                <strong>{summary.alreadyHadTag}</strong> already had the tag
-                (skipped), <strong>{summary.failed}</strong> failed.
-              </s-text>
-            )}
-          </s-box>
-        </s-banner>
-      )}
-
-      {/* Progress Bar for Apply Action */}
-      {isApplyingTag && (
-        <s-section marginBlock="400">
-          <s-box
-            padding="400"
-            borderWidth="base"
-            borderRadius="base"
-            background="subdued"
-          >
-            <s-inline-stack align="space-between" blockAlign="center">
-              <s-text variant="headingMd">Applying Tags...</s-text>
-              <s-badge tone="info">In Progress</s-badge>
-            </s-inline-stack>
-            <s-box paddingBlockStart="200">
-              <s-text variant="bodyMd" tone="subdued">
-                Processing products with pagination and rate limiting. This may
-                take a few minutes for large batches.
-              </s-text>
+              )}
             </s-box>
-            <s-box paddingBlockStart="300">
-              <s-progress-bar size="small" />
-            </s-box>
-          </s-box>
+          </s-banner>
         </s-section>
       )}
 
-      <s-layout>
-        {/* Filters Card */}
-        <s-layout-section>
-          <s-section heading="Product Filters">
-            <s-box
-              padding="400"
-              borderWidth="base"
-              borderRadius="base"
-              background="subdued"
-            >
-              <s-text variant="bodyMd" tone="subdued">
-                Choose or combine filters to target specific products. All
-                filters support partial matching.
-              </s-text>
+      <s-section>
+        {loaderData.previewMode ? (
+          <s-section heading="Preview results">
+            <s-box borderRadius="base">
+              {/* <s-stack>
+                <s-badge
+                  tone={loaderData.products.length > 0 ? "success" : "info"}
+                >
+                  {totalCountDisplay}{" "}
+                  {loaderData.totalCount === 1 ? "product" : "products"} found
+                </s-badge>
+              </s-stack> */}
 
-              <s-box paddingBlockStart="400">
-                <s-inline-stack gap="400" wrap>
-                  <s-box style={{ flex: "1", minWidth: "250px" }}>
-                    <s-text variant="bodyMd" fontWeight="semibold">
-                      Keyword in Title
+              {loaderData.products.length === 0 ? (
+                <s-box>
+                  <s-text>No products match your filters</s-text>
+                  <s-box>
+                    <s-text>
+                      Try adjusting your filters or clearing them to see more
+                      products.
                     </s-text>
-                    <s-box paddingBlockStart="100">
-                      <input
-                        type="text"
-                        value={keyword}
-                        onChange={(e) => setKeyword(e.target.value)}
-                        placeholder="e.g., shirt, vintage, 2024"
-                        disabled={isSubmitting}
-                        style={{
-                          width: "100%",
-                          padding: "8px 12px",
-                          border: "1px solid #c4cdd5",
-                          borderRadius: "4px",
-                          fontSize: "14px",
-                        }}
-                      />
-                    </s-box>
-                    <s-box paddingBlockStart="100">
-                      <s-text variant="bodySm" tone="subdued">
-                        Searches for products with titles containing this text
-                      </s-text>
-                    </s-box>
                   </s-box>
-
-                  <s-box style={{ flex: "1", minWidth: "250px" }}>
-                    <s-text variant="bodyMd" fontWeight="semibold">
-                      Product Type
-                    </s-text>
-                    <s-box paddingBlockStart="100">
-                      <input
-                        type="text"
-                        value={productType}
-                        onChange={(e) => setProductType(e.target.value)}
-                        placeholder="e.g., Shirts, Pants"
-                        disabled={isSubmitting}
-                        style={{
-                          width: "100%",
-                          padding: "8px 12px",
-                          border: "1px solid #c4cdd5",
-                          borderRadius: "4px",
-                          fontSize: "14px",
-                        }}
-                      />
-                    </s-box>
-                    <s-box paddingBlockStart="100">
-                      <s-text variant="bodySm" tone="subdued">
-                        Must match the exact product type
-                      </s-text>
-                    </s-box>
-                  </s-box>
-
-                  <s-box style={{ flex: "1", minWidth: "250px" }}>
-                    <s-text variant="bodyMd" fontWeight="semibold">
-                      Collection Handle
-                    </s-text>
-                    <s-box paddingBlockStart="100">
-                      <input
-                        type="text"
-                        value={collectionHandle}
-                        onChange={(e) => setCollectionHandle(e.target.value)}
-                        placeholder="e.g., summer-collection"
-                        disabled={isSubmitting}
-                        style={{
-                          width: "100%",
-                          padding: "8px 12px",
-                          border: "1px solid #c4cdd5",
-                          borderRadius: "4px",
-                          fontSize: "14px",
-                        }}
-                      />
-                    </s-box>
-                    <s-box paddingBlockStart="100">
-                      <s-text variant="bodySm" tone="subdued">
-                        The URL-friendly handle of the collection
-                      </s-text>
-                    </s-box>
-                  </s-box>
-                </s-inline-stack>
-              </s-box>
-
-              {filtersSet && (
-                <s-box paddingBlockStart="400">
-                  <s-button
-                    onClick={handleClearFilters}
-                    disabled={isSubmitting}
-                  >
-                    Clear all filters
-                  </s-button>
                 </s-box>
+              ) : (
+                <>
+                  <s-box>
+                    <s-text>
+                      Showing first {loaderData.products.length} of{" "}
+                      <strong>{totalCountDisplay}</strong> estimated matching
+                      products
+                    </s-text>
+                  </s-box>
+
+                  <s-section padding="none">
+                    <s-table>
+                      <s-table-header-row>
+                        <s-table-header>Name</s-table-header>
+                        <s-table-header>Handle</s-table-header>
+                        <s-table-header>Product type</s-table-header>
+                        <s-table-header>Tags</s-table-header>
+                      </s-table-header-row>
+
+                      <s-table-body>
+                        {loaderData.products.map((product) => {
+                          const hasTag = product.tags.some(
+                            (tag) =>
+                              tag.toLowerCase() ===
+                              tagToApply.trim().toLowerCase(),
+                          );
+
+                          return (
+                            <s-table-row key={product.id}>
+                              <s-table-cell>{product.title}</s-table-cell>
+                              <s-table-cell>{product.handle}</s-table-cell>
+                              <s-table-cell>
+                                {product.productType || "N/A"}
+                              </s-table-cell>
+
+                              <s-table-cell>
+                                {product.tags.length > 0 ? (
+                                  <>
+                                    {product.tags.map((tag, idx) => (
+                                      <s-badge
+                                        key={idx}
+                                        tone={
+                                          tag.toLowerCase() ===
+                                          tagToApply.trim().toLowerCase()
+                                            ? "success"
+                                            : undefined
+                                        }
+                                      >
+                                        {tag}
+                                      </s-badge>
+                                    ))}
+                                  </>
+                                ) : (
+                                  <s-text>No tags</s-text>
+                                )}
+                              </s-table-cell>
+                            </s-table-row>
+                          );
+                        })}
+                      </s-table-body>
+                    </s-table>
+                  </s-section>
+                </>
               )}
             </s-box>
           </s-section>
-        </s-layout-section>
-
-        {/* Tag Application Card */}
-        <s-layout-section>
-          <s-section heading="Tag Configuration">
-            <s-box
-              padding="400"
-              borderWidth="base"
-              borderRadius="base"
-              background="subdued"
+        ) : (
+          <LegacyCard sectioned>
+            <EmptyState
+              heading="Automate Product Tagging"
+              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
             >
-              <s-text variant="bodyMd" fontWeight="semibold">
-                Tag to Apply
-              </s-text>
-              <s-box paddingBlockStart="100">
-                <input
-                  type="text"
-                  value={tagToApply}
-                  onChange={(e) => setTagToApply(e.target.value)}
-                  placeholder="e.g., Free Ship, Sale, New Arrival"
-                  disabled={isSubmitting}
-                  style={{
-                    width: "100%",
-                    padding: "8px 12px",
-                    border: "1px solid #c4cdd5",
-                    borderRadius: "4px",
-                    fontSize: "14px",
-                  }}
-                />
+              <p>
+                Begin by adding search filters to define which products should
+                automatically receive your new tags.
+              </p>
+            </EmptyState>
+          </LegacyCard>
+        )}
+
+        {/* Initial State */}
+        {/* {!loaderData.previewMode && !loaderData.error && (
+          <s-section>
+            <s-section>
+              <s-box
+                borderWidth="base"
+                borderRadius="base"
+                background="subdued"
+              >
+                <s-text>Ready to tag products</s-text>
+                <s-box>
+                  <s-text>
+                    Set your filters and click <strong>Preview Matches</strong>{" "}
+                    to see which products will be tagged.
+                  </s-text>
+                </s-box>
+                <s-box>
+                  <s-text variant="bodyMd">
+                    The system supports cursor-based pagination and can handle
+                    1,000+ products efficiently.
+                  </s-text>
+                </s-box>
               </s-box>
-              <s-box paddingBlockStart="100">
-                <s-text variant="bodySm" tone="subdued">
-                  Enter the tag you want to add to filtered products
-                </s-text>
-              </s-box>
+            </s-section>
+          </s-section>
+        )} */}
+      </s-section>
+
+      {/* Filters Card */}
+      <s-section slot="aside" heading="Filter Products">
+        <s-text-field
+          label="Search by keyword"
+          value={keyword}
+          onChange={(e) => setKeyword(e.currentTarget.value)}
+          placeholder="e.g., shirt, vintage, 2024"
+          disabled={isSubmitting}
+        />
+        <s-text-field
+          label="Search by product type"
+          value={productType}
+          onChange={(e) => setProductType(e.currentTarget.value)}
+          placeholder="e.g., Shirts, Pants"
+          disabled={isSubmitting}
+        />
+        <s-text-field
+          label="Search by collection"
+          value={productType}
+          onChange={(e) => setCollectionHandle(e.currentTarget.value)}
+          placeholder="e.g., summer-collection"
+          disabled={isSubmitting}
+        />
+        <s-button
+          variant="primary"
+          onClick={handlePreview}
+          loading={isPreviewing}
+          disabled={isApplyingTag || !filtersSet}
+        >
+          Preview Matches
+        </s-button>
+        <s-button
+          variant="secondary"
+          onClick={handleClearFilters}
+          disabled={isSubmitting}
+        >
+          Clear all filters
+        </s-button>
+      </s-section>
+
+      {/* Tag Card */}
+      <s-section slot="aside" heading="Apply Tag">
+        <s-text-field
+          value={tagToApply}
+          placeholder="e.g., Free shipping"
+          onChange={(e) => setTagToApply(e.currentTarget.value)}
+          disabled={isSubmitting}
+        />
+        <s-button
+          variant="primary"
+          commandFor="modal"
+          loading={isApplyingTag}
+          disabled={
+            !loaderData.previewMode ||
+            !tagToApply.trim() ||
+            loaderData.products.length === 0 ||
+            isSubmitting
+          }
+        >
+          {isApplyingTag
+            ? "Applying Tag..."
+            : `Apply Tag (${totalCountDisplay} Products)`}
+        </s-button>
+      </s-section>
+
+      {/* <s-layout-section>
+          <s-section heading="Tag Configuration">
+           
 
               {!filtersSet && (
                 <s-box paddingBlockStart="300">
@@ -768,179 +773,35 @@ export default function AddTags() {
                 </s-box>
               )}
 
-              <s-box paddingBlockStart="400">
-                <s-stack gap="300">
-                  <s-button
-                    onClick={handlePreview}
-                    loading={isPreviewing}
-                    disabled={
-                      isApplyingTag || !filtersSet || !tagToApply.trim()
-                    }
-                  >
-                    Preview Matches
-                  </s-button>
-                  <s-button
-                    variant="primary"
-                    onClick={handleApplyTag}
-                    loading={isApplyingTag}
-                    disabled={
-                      !loaderData.previewMode ||
-                      !tagToApply.trim() ||
-                      loaderData.products.length === 0 ||
-                      isSubmitting
-                    }
-                  >
-                    {isApplyingTag
-                      ? "Applying Tag..."
-                      : `Apply Tag (${totalCountDisplay} Products)`}
-                  </s-button>
-                </s-stack>
-              </s-box>
+    
             </s-box>
           </s-section>
-        </s-layout-section>
+        </s-layout-section> */}
+      <>
+        <s-modal id="modal" heading="Details">
+          <s-paragraph>
+            `Are you sure you want to apply the tag "{tagToApply.trim()}" to all{" "}
+            {totalCountText} matched products?`,
+          </s-paragraph>
 
-        {/* Preview Results */}
-        {loaderData.previewMode && (
-          <s-layout-section>
-            <s-section>
-              <s-box
-                padding="400"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <s-stack align="space-between" blockAlign="center">
-                  <s-text variant="headingMd">Preview Results</s-text>
-                  <s-badge
-                    tone={loaderData.products.length > 0 ? "success" : "info"}
-                  >
-                    {totalCountDisplay}{" "}
-                    {loaderData.totalCount === 1 ? "product" : "products"} found
-                  </s-badge>
-                </s-stack>
-
-                {loaderData.products.length === 0 ? (
-                  <s-box
-                    paddingBlockStart="400"
-                    style={{ textAlign: "center" }}
-                  >
-                    <s-text variant="headingMd">
-                      No products match your filters
-                    </s-text>
-                    <s-box paddingBlockStart="200">
-                      <s-text variant="bodyMd" tone="subdued">
-                        Try adjusting your filters or clearing them to see more
-                        products.
-                      </s-text>
-                    </s-box>
-                  </s-box>
-                ) : (
-                  <>
-                    <s-box paddingBlockStart="300">
-                      <s-text variant="bodyMd" tone="subdued">
-                        Showing first {loaderData.products.length} of{" "}
-                        <strong>{totalCountDisplay}</strong> estimated matching
-                        products
-                      </s-text>
-                    </s-box>
-
-                    <s-box paddingBlockStart="400">
-                      {loaderData.products.map((product) => {
-                        const hasTag = product.tags.some(
-                          (tag) =>
-                            tag.toLowerCase() ===
-                            tagToApply.trim().toLowerCase(),
-                        );
-
-                        return (
-                          <s-box
-                            key={product.id}
-                            padding="300"
-                            borderWidth="base"
-                            borderRadius="base"
-                            background="surface"
-                            marginBlockEnd="200"
-                          >
-                            <s-stack align="space-between" blockAlign="start">
-                              <s-box>
-                                <s-text variant="bodyMd" fontWeight="semibold">
-                                  {product.title}
-                                </s-text>
-                                <s-box paddingBlockStart="100">
-                                  <s-text variant="bodySm" tone="subdued">
-                                    Type: {product.productType || "N/A"} •
-                                    Handle: {product.handle}
-                                  </s-text>
-                                </s-box>
-                              </s-box>
-                              {hasTag && (
-                                <s-badge tone="success">Already Tagged</s-badge>
-                              )}
-                            </s-stack>
-
-                            {product.tags.length > 0 && (
-                              <s-box paddingBlockStart="200">
-                                <s-inline-stack gap="100" wrap>
-                                  <s-text variant="bodySm" tone="subdued">
-                                    Tags:
-                                  </s-text>
-                                  {product.tags.map((tag, idx) => (
-                                    <s-badge
-                                      key={idx}
-                                      tone={
-                                        tag.toLowerCase() ===
-                                        tagToApply.trim().toLowerCase()
-                                          ? "success"
-                                          : undefined
-                                      }
-                                    >
-                                      {tag}
-                                    </s-badge>
-                                  ))}
-                                </s-inline-stack>
-                              </s-box>
-                            )}
-                          </s-box>
-                        );
-                      })}
-                    </s-box>
-                  </>
-                )}
-              </s-box>
-            </s-section>
-          </s-layout-section>
-        )}
-
-        {/* Initial State */}
-        {!loaderData.previewMode && !loaderData.error && (
-          <s-layout-section>
-            <s-section>
-              <s-box
-                padding="600"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-                style={{ textAlign: "center" }}
-              >
-                <s-text variant="headingMd">Ready to tag products</s-text>
-                <s-box paddingBlockStart="300">
-                  <s-text variant="bodyMd">
-                    Set your filters and click <strong>Preview Matches</strong>{" "}
-                    to see which products will be tagged.
-                  </s-text>
-                </s-box>
-                <s-box paddingBlockStart="200">
-                  <s-text variant="bodyMd" tone="subdued">
-                    The system supports cursor-based pagination and can handle
-                    1,000+ products efficiently.
-                  </s-text>
-                </s-box>
-              </s-box>
-            </s-section>
-          </s-layout-section>
-        )}
-      </s-layout>
+          <s-button
+            slot="secondary-actions"
+            commandFor="modal"
+            command="--hide"
+          >
+            Cancel
+          </s-button>
+          <s-button
+            slot="primary-action"
+            variant="primary"
+            commandFor="modal"
+            command="--hide"
+            onClick={handleApplyTag}
+          >
+            Confirm
+          </s-button>
+        </s-modal>
+      </>
     </s-page>
   );
 }
