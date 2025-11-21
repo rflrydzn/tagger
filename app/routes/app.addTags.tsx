@@ -33,24 +33,38 @@ interface Product {
   tags: string[];
 }
 
+interface Summary {
+  updated: number; // Products that were successfully mutated
+  alreadyHadTag: number; // Products filtered but skipped from JSONL
+  failed: number; // Products that failed mutation
+  total: number; // Total products matching filter (updated + alreadyHadTag + failed)
+  tag: string;
+}
+
+interface BulkOperationStatus {
+  id: string;
+  status: string;
+  objectCount: number;
+  url: string | null;
+}
+
 interface LoaderData {
   products: Product[];
   totalCount: number;
   filters: FilterState;
   previewMode: boolean;
   error: string | null;
+  bulkOperationStatus?: BulkOperationStatus;
+  // New field to return the final calculated summary
+  finalSummary: Summary | null;
 }
 
 interface ActionData {
   success: boolean;
   error: string | null;
-  summary?: {
-    updated: number;
-    alreadyHadTag: number;
-    failed: number;
-    total: number;
-    tag: string;
-  };
+  bulkOperationId?: string;
+  // This is the *pre-run* estimate, which we pass to the component/loader via state/URL
+  preRunSummary?: Summary;
 }
 
 const buildProductQuery = ({
@@ -130,7 +144,8 @@ async function fetchProductsIteratively({
       hasNextPage = data.data.products.pageInfo.hasNextPage;
       cursor = data.data.products.pageInfo.endCursor;
 
-      if (hasNextPage) {
+      if (hasNextPage && allProducts.length % FETCH_PAGE_LIMIT === 0) {
+        // Wait briefly to avoid hitting rate limits too hard
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
     } catch (error) {
@@ -143,6 +158,112 @@ async function fetchProductsIteratively({
   return allProducts;
 }
 
+async function checkBulkOperationStatus(
+  admin: any,
+): Promise<BulkOperationStatus | null> {
+  const query = `
+    #graphql
+    query {
+      currentBulkOperation(type: MUTATION) {
+        id
+        status
+        errorCode
+        createdAt
+        completedAt
+        objectCount
+        url
+      }
+    }
+  `;
+
+  const response = await admin.graphql(query);
+  const data = (await response.json()) as GraphQLResponse;
+
+  if (data.data?.currentBulkOperation) {
+    const op = data.data.currentBulkOperation;
+    return {
+      id: op.id,
+      status: op.status,
+      objectCount: parseInt(op.objectCount, 10),
+      url: op.url,
+    };
+  }
+  return null;
+}
+
+// FIX APPLIED HERE: Improved parsing of bulk operation results file.
+async function processBulkOperationResults({
+  url,
+  totalProductsMatchingFilter,
+  totalProductsProcessed,
+  tag,
+}: {
+  url: string;
+  totalProductsMatchingFilter: number;
+  totalProductsProcessed: number;
+  tag: string;
+}): Promise<Summary> {
+  try {
+    const resultsResponse = await fetch(url);
+    if (!resultsResponse.ok) {
+      throw new Error("Failed to fetch bulk operation results file.");
+    }
+
+    const resultsText = await resultsResponse.text();
+    const lines = resultsText.trim().split("\n").filter(Boolean);
+
+    let successfulMutations = 0;
+    let failedMutations = 0;
+
+    for (const line of lines) {
+      try {
+        const result = JSON.parse(line);
+
+        // 1. Check for root-level errors (API connection failures)
+        const hasRootErrors = !!result.errors;
+
+        // 2. Check for user errors (mutation validation failures) under the operation name
+        const hasUserErrors = result.productUpdate?.userErrors?.length > 0;
+
+        if (hasRootErrors || hasUserErrors) {
+          failedMutations++;
+        } else {
+          // If the line successfully parsed and has NO errors, it's a success.
+          successfulMutations++;
+        }
+      } catch (e) {
+        // Malformed line is considered a failure
+        console.error("Error parsing result line:", e);
+        failedMutations++;
+      }
+    }
+
+    const totalMutationsAttempted = successfulMutations + failedMutations;
+
+    // Calculate alreadyHadTag based on total filter matches vs actual attempts (JSONL lines)
+    // This value should match the preRunSummary.alreadyHadTag if the fetch was complete.
+    const alreadyHadTag = totalProductsMatchingFilter - totalMutationsAttempted;
+
+    return {
+      updated: successfulMutations,
+      alreadyHadTag: alreadyHadTag < 0 ? 0 : alreadyHadTag,
+      failed: failedMutations,
+      total: totalProductsMatchingFilter,
+      tag: tag,
+    };
+  } catch (e) {
+    console.error("Critical error processing bulk results:", e);
+    // Fallback error summary
+    return {
+      updated: 0,
+      alreadyHadTag: totalProductsMatchingFilter - totalProductsProcessed,
+      failed: totalProductsProcessed, // Assume all failed if we can't read the file
+      total: totalProductsMatchingFilter,
+      tag: tag,
+    };
+  }
+}
+
 export const loader = async ({
   request,
 }: LoaderFunctionArgs): Promise<LoaderData> => {
@@ -153,10 +274,63 @@ export const loader = async ({
   const productType = url.searchParams.get("productType") || "";
   const collectionHandle = url.searchParams.get("collectionHandle") || "";
   const preview = url.searchParams.get("preview") === "true";
+  const checkStatus = url.searchParams.get("checkStatus") === "true";
+
+  // Context passed from the client for final summary calculation
+  const totalFiltered = parseInt(
+    url.searchParams.get("totalFiltered") || "0",
+    10,
+  );
+  const totalProcessed = parseInt(
+    url.searchParams.get("totalProcessed") || "0",
+    10,
+  );
+  const appliedTag = url.searchParams.get("appliedTag") || "";
 
   const filters: FilterState = { keyword, productType, collectionHandle };
   const queryString = buildProductQuery(filters);
 
+  let bulkOpStatus: BulkOperationStatus | null = null;
+  let finalSummary: Summary | null = null;
+
+  // Check bulk operation status if requested
+  if (checkStatus) {
+    try {
+      bulkOpStatus = await checkBulkOperationStatus(admin);
+
+      // If the operation is COMPLETE and we have a results URL, process the file
+      if (
+        bulkOpStatus?.status === "COMPLETED" &&
+        bulkOpStatus.url &&
+        appliedTag
+      ) {
+        console.log("Bulk operation completed. Processing results...");
+        finalSummary = await processBulkOperationResults({
+          url: bulkOpStatus.url,
+          totalProductsMatchingFilter: totalFiltered,
+          totalProductsProcessed: totalProcessed,
+          tag: appliedTag,
+        });
+      }
+
+      return {
+        products: [],
+        totalCount: 0,
+        filters,
+        previewMode: false,
+        error: null,
+        bulkOperationStatus: bulkOpStatus || undefined,
+        finalSummary, // Return the final summary if calculated
+      };
+    } catch (error) {
+      console.error(
+        "Error checking bulk operation or processing results:",
+        error,
+      );
+    }
+  }
+
+  // Handle preview or initial load logic
   if (!preview || !queryString) {
     return {
       products: [],
@@ -164,17 +338,13 @@ export const loader = async ({
       filters,
       previewMode: false,
       error: null,
+      finalSummary: null,
     };
   }
 
   try {
-    // Fetch all products to get exact count
     const allProducts = await fetchProductsIteratively({ admin, queryString });
-
-    // Get exact count
     const totalCount = allProducts.length;
-
-    // Only show preview count for display
     const productsForDisplay = allProducts.slice(0, PREVIEW_COUNT);
 
     return {
@@ -183,6 +353,7 @@ export const loader = async ({
       filters,
       previewMode: true,
       error: null,
+      finalSummary: null,
     };
   } catch (error) {
     console.error("Loader error:", error);
@@ -192,6 +363,7 @@ export const loader = async ({
       filters,
       previewMode: false,
       error: error instanceof Error ? error.message : "Failed to load products",
+      finalSummary: null,
     };
   }
 };
@@ -212,159 +384,255 @@ export const action = async ({
     return { success: false, error: "Tag name cannot be empty." };
   }
 
-  const filters: FilterState = { keyword, productType, collectionHandle };
-  const queryString = buildProductQuery(filters);
-
-  if (!queryString) {
-    return {
-      success: false,
-      error: "Please apply at least one filter before tagging.",
-    };
-  }
+  const TAG = tagToApply.trim();
 
   if (actionIntent === "applyTag") {
-    let allProducts: Product[] = [];
+    const filters: FilterState = { keyword, productType, collectionHandle };
+    const queryString = buildProductQuery(filters);
+
+    if (!queryString) {
+      return {
+        success: false,
+        error: "Please apply at least one filter before tagging.",
+      };
+    }
+
     try {
-      allProducts = await fetchProductsIteratively({ admin, queryString });
-    } catch (e) {
-      console.error("Error during paginated product fetch:", e);
-      return {
-        success: false,
-        error: `Failed to fetch all products for tagging: ${e instanceof Error ? e.message : "Unknown error"}`,
-      };
-    }
+      // Step 1: Fetch all products to create JSONL
+      const allProducts = await fetchProductsIteratively({
+        admin,
+        queryString,
+      });
 
-    if (allProducts.length === 0) {
-      return {
-        success: false,
-        error: "No products found matching your filters to tag.",
-      };
-    }
+      const totalFiltered = allProducts.length;
 
-    let updated = 0;
-    let alreadyHadTag = 0;
-    let failed = 0;
-    const TAG = tagToApply.trim();
-    const MAX_RETRIES = 3;
-    const BASE_DELAY = 500;
-
-    const updateMutation = `
-      #graphql
-      mutation productUpdate($input: ProductInput!) {
-        productUpdate(input: $input) {
-          product {
-            id
-            tags
-          }
-          userErrors {
-            field
-            message
-          }
-        }
+      if (totalFiltered === 0) {
+        return {
+          success: false,
+          error: "No products found matching your filters to tag.",
+        };
       }
-    `;
 
-    let specificErrorMessage: string | null = null;
-    const failedProducts: string[] = [];
-
-    for (const product of allProducts) {
-      const hasTag = product.tags.some(
-        (tag) => tag.toLowerCase() === TAG.toLowerCase(),
+      // Step 2: Create JSONL content - filter out products that already have the tag
+      const productsToUpdate = allProducts.filter(
+        (product) =>
+          !product.tags.some((tag) => tag.toLowerCase() === TAG.toLowerCase()),
       );
 
-      if (hasTag) {
-        alreadyHadTag++;
-        continue;
+      const jsonlLines = productsToUpdate.map((product) => {
+        const newTags = [...product.tags, TAG];
+        // Bulk operations expect the input object inside a root object.
+        // The productUpdate mutation expects a ProductInput object.
+        return JSON.stringify({
+          input: {
+            id: product.id,
+            tags: newTags,
+          },
+        });
+      });
+
+      const totalProcessed = jsonlLines.length;
+
+      const preRunSummary: Summary = {
+        updated: totalProcessed, // Estimated successful updates
+        alreadyHadTag: totalFiltered - totalProcessed,
+        failed: 0,
+        total: totalFiltered,
+        tag: TAG,
+      };
+
+      if (totalProcessed === 0) {
+        return {
+          success: true,
+          preRunSummary,
+          error: null,
+        };
       }
 
-      let productUpdateFailed = false;
+      const jsonlContent = jsonlLines.join("\n");
 
-      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        try {
-          const newTags = [...product.tags, TAG];
-
-          const updateResponse = await admin.graphql(updateMutation, {
-            variables: {
-              input: {
-                id: product.id,
-                tags: newTags,
-              },
-            },
-          });
-
-          const updateData = (await updateResponse.json()) as GraphQLResponse;
-
-          if (updateData.errors) {
-            console.error(
-              `GraphQL error for ${product.id}:`,
-              updateData.errors,
-            );
-            specificErrorMessage = `GraphQL Error: ${updateData.errors[0].message}`;
-            productUpdateFailed = true;
-            break;
-          }
-
-          if (updateData.data?.productUpdate?.userErrors?.length > 0) {
-            const errorMessage =
-              updateData.data.productUpdate.userErrors[0].message;
-
-            if (!specificErrorMessage) {
-              const productIdShort = product.id.split("/").pop();
-              specificErrorMessage = `Product ${productIdShort} (${product.title}): ${errorMessage}`;
+      // Step 3: Create staged upload
+      const stagedUploadMutation = `
+        mutation {
+          stagedUploadsCreate(input:[{
+            resource: BULK_MUTATION_VARIABLES,
+            filename: "bulk_tag_vars",
+            mimeType: "text/jsonl",
+            httpMethod: POST
+          }]){
+            userErrors{
+              field
+              message
             }
-
-            failedProducts.push(product.title);
-            productUpdateFailed = true;
-            break;
-          }
-
-          updated++;
-          break;
-        } catch (error: any) {
-          console.error(
-            `Transient error updating product ${product.id} on attempt ${attempt + 1}:`,
-            error,
-          );
-
-          if (attempt < MAX_RETRIES - 1) {
-            const delay = BASE_DELAY * Math.pow(2, attempt);
-            await new Promise((resolve) => setTimeout(resolve, delay));
-          } else {
-            productUpdateFailed = true;
-            failedProducts.push(product.title);
-
-            if (!specificErrorMessage) {
-              specificErrorMessage = `Network error after ${MAX_RETRIES} retries: ${error.message}`;
+            stagedTargets{
+              url
+              resourceUrl
+              parameters {
+                name
+                value
+              }
             }
           }
         }
+      `;
+
+      const stagedResponse = await admin.graphql(stagedUploadMutation);
+      const stagedData = (await stagedResponse.json()) as GraphQLResponse;
+
+      if (
+        stagedData.errors ||
+        stagedData.data?.stagedUploadsCreate?.userErrors?.length > 0
+      ) {
+        throw new Error("Failed to create staged upload");
       }
 
-      if (productUpdateFailed) {
-        failed++;
+      const stagedTarget = stagedData.data.stagedUploadsCreate.stagedTargets[0];
+      const uploadUrl = stagedTarget.url;
+      const parameters = stagedTarget.parameters;
+
+      // Step 4: Upload JSONL file
+      const formDataUpload = new FormData();
+      parameters.forEach((param: any) => {
+        formDataUpload.append(param.name, param.value);
+      });
+      formDataUpload.append(
+        "file",
+        new Blob([jsonlContent], { type: "text/jsonl" }),
+        "bulk_tag_vars",
+      );
+
+      const uploadResponse = await fetch(uploadUrl, {
+        method: "POST",
+        body: formDataUpload,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Failed to upload JSONL file");
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Step 5: Get the staged upload path (key parameter)
+      const keyParam = parameters.find((p: any) => p.name === "key");
+      if (!keyParam) {
+        throw new Error("Upload key not found");
+      }
+
+      // Step 6: Run bulk operation
+      // FIX APPLIED HERE: Simplified the inner mutation to only request userErrors.
+      const bulkMutation = `
+        mutation {
+          bulkOperationRunMutation(
+            mutation: "mutation call($input: ProductInput!) { productUpdate(input: $input) { userErrors { message field } } }",
+            stagedUploadPath: "${keyParam.value}"
+          ) {
+            bulkOperation {
+              id
+              url
+              status
+            }
+            userErrors {
+              message
+              field
+            }
+          }
+        }
+      `;
+
+      const bulkResponse = await admin.graphql(bulkMutation);
+      const bulkData = (await bulkResponse.json()) as GraphQLResponse;
+
+      if (
+        bulkData.errors ||
+        bulkData.data?.bulkOperationRunMutation?.userErrors?.length > 0
+      ) {
+        // Log detailed error from Shopify if possible
+        const shopifyError =
+          bulkData.data?.bulkOperationRunMutation?.userErrors?.[0]?.message ||
+          "Unknown Shopify API error.";
+        console.error("Shopify Bulk Run Error:", shopifyError, bulkData.errors);
+
+        throw new Error(`Failed to create bulk operation: ${shopifyError}`);
+      }
+
+      const bulkOperationId =
+        bulkData.data.bulkOperationRunMutation.bulkOperation.id;
+
+      // SUCCESS: Return the pre-run summary and the operation ID
+      return {
+        success: true,
+        bulkOperationId,
+        error: null,
+        preRunSummary,
+      };
+    } catch (error) {
+      console.error("Bulk operation error:", error);
+      return {
+        success: false,
+        error: `Failed to start bulk operation: ${error instanceof Error ? error.message : "Unknown error"}`,
+      };
     }
-
-    const errorDetails = specificErrorMessage
-      ? `${specificErrorMessage}${failedProducts.length > 0 ? ` | Failed products: ${failedProducts.slice(0, 3).join(", ")}${failedProducts.length > 3 ? "..." : ""}` : ""}`
-      : null;
-
-    return {
-      success: failed < allProducts.length,
-      summary: {
-        updated,
-        alreadyHadTag,
-        failed,
-        total: allProducts.length,
-        tag: TAG,
-      },
-      error: errorDetails,
-    };
   }
 
   return { success: false, error: "Invalid action" };
+};
+
+// Helper to determine initial state for persistence across refreshes
+const getInitialStates = (
+  loaderData: LoaderData,
+): {
+  initialBulkOpId: string | null;
+  initialBulkOpContext: {
+    totalFiltered: number;
+    totalProcessed: number;
+    tag: string;
+  } | null;
+  initialSummary: Summary | null;
+} => {
+  // Check if we are hydrating the client (window is available)
+  if (typeof window === "undefined") {
+    return {
+      initialBulkOpId: null,
+      initialBulkOpContext: null,
+      initialSummary: loaderData.finalSummary,
+    };
+  }
+
+  const status = loaderData.bulkOperationStatus;
+  const urlParams = new URLSearchParams(window.location.search);
+  const isPolling = urlParams.get("checkStatus") === "true";
+
+  // If the loader found an active operation AND the URL has the context params, resume state
+  if (
+    isPolling &&
+    status?.id &&
+    status.status !== "COMPLETED" &&
+    status.status !== "FAILED" &&
+    status.status !== "CANCELED"
+  ) {
+    const totalFiltered = parseInt(urlParams.get("totalFiltered") || "0", 10);
+    const totalProcessed = parseInt(urlParams.get("totalProcessed") || "0", 10);
+    const appliedTag = urlParams.get("appliedTag") || "";
+
+    const context = { totalFiltered, totalProcessed, tag: appliedTag };
+
+    return {
+      initialBulkOpId: status.id,
+      initialBulkOpContext: context,
+      initialSummary: {
+        // Use the context to display the running job's progress placeholder
+        updated: totalProcessed,
+        alreadyHadTag: totalFiltered - totalProcessed,
+        failed: 0,
+        total: totalFiltered,
+        tag: appliedTag,
+      },
+    };
+  }
+
+  return {
+    initialBulkOpId: null,
+    initialBulkOpContext: null,
+    initialSummary: loaderData.finalSummary,
+  };
 };
 
 export default function AddTags() {
@@ -372,6 +640,9 @@ export default function AddTags() {
   const actionData = useActionData<typeof action>();
   const submit = useSubmit();
   const navigation = useNavigation();
+
+  const { initialBulkOpId, initialBulkOpContext, initialSummary } =
+    getInitialStates(loaderData);
 
   const [keyword, setKeyword] = useState(loaderData.filters.keyword);
   const [productType, setProductType] = useState(
@@ -381,8 +652,14 @@ export default function AddTags() {
     loaderData.filters.collectionHandle,
   );
   const [tagToApply, setTagToApply] = useState("");
-  const [showSummary, setShowSummary] = useState(false);
-  const [summary, setSummary] = useState<any>(null);
+
+  // State initialization now checks if a job is active on load/refresh
+  const [currentSummary, setCurrentSummary] = useState<Summary | null>(
+    initialSummary,
+  );
+  const [bulkOpId, setBulkOpId] = useState<string | null>(initialBulkOpId);
+  const [bulkOpContext, setBulkOpContext] =
+    useState<typeof initialBulkOpContext>(initialBulkOpContext);
 
   const isSubmitting = navigation.state === "submitting";
   const isApplyingTag =
@@ -392,29 +669,111 @@ export default function AddTags() {
   const filtersSet =
     !!keyword.trim() || !!productType.trim() || !!collectionHandle.trim();
 
-  const totalCountText =
-    loaderData.totalCount > FETCH_PAGE_LIMIT
-      ? `${loaderData.totalCount.toLocaleString()}`
-      : loaderData.totalCount.toString();
+  const totalCountText = loaderData.totalCount.toLocaleString();
 
+  // 1. Handle action data (starts a new job)
   useEffect(() => {
     if (actionData) {
-      setSummary(actionData.summary || { error: actionData.error });
-      setShowSummary(true);
-      if (actionData.success && !actionData.error) {
-        setTagToApply("");
+      if (actionData.error && !actionData.bulkOperationId) {
+        // Handle Action failure
+        setCurrentSummary({
+          updated: 0,
+          alreadyHadTag: 0,
+          failed: 0,
+          total: 0,
+          tag: actionData.error,
+        });
+      } else if (actionData.preRunSummary) {
+        // If operation started (or all skipped), set initial summary
+        setCurrentSummary(actionData.preRunSummary);
+
+        // If a bulk operation ID exists, set state for polling
+        if (actionData.bulkOperationId) {
+          const context = {
+            totalFiltered: actionData.preRunSummary.total,
+            totalProcessed: actionData.preRunSummary.updated, // 'updated' is the number of lines processed
+            tag: actionData.preRunSummary.tag,
+          };
+          setBulkOpId(actionData.bulkOperationId);
+          setBulkOpContext(context);
+        }
+
+        // If no bulkOperationId, but preRunSummary exists (meaning all were skipped)
+        if (
+          !actionData.bulkOperationId &&
+          actionData.preRunSummary.updated === 0
+        ) {
+          setCurrentSummary(actionData.preRunSummary);
+        }
       }
     }
   }, [actionData]);
 
+  // 2. Poll for bulk operation status and context
   useEffect(() => {
-    setShowSummary(false);
-    setSummary(null);
-  }, [keyword, productType, collectionHandle]);
+    const status = loaderData.bulkOperationStatus?.status;
+    // An operation is terminal if it is COMPLETED, FAILED, or CANCELED.
+    const isTerminal =
+      status === "COMPLETED" || status === "FAILED" || status === "CANCELED";
+
+    // Polling condition:
+    // If we have an operation ID (from state, which is initialized from action or loader/URL)
+    // AND the status is not terminal (or is undefined/null, meaning we need the first check)
+    if (bulkOpId && !isTerminal) {
+      const params = new URLSearchParams();
+      params.set("checkStatus", "true");
+      // Pass context needed for final result calculation, which survives refresh via URL
+      if (bulkOpContext) {
+        params.set("totalFiltered", bulkOpContext.totalFiltered.toString());
+        params.set("totalProcessed", bulkOpContext.totalProcessed.toString());
+        params.set("appliedTag", bulkOpContext.tag);
+      }
+
+      const timer = setTimeout(() => {
+        submit(params, { method: "get", replace: true }); // Use replace to keep URL cleaner
+      }, 3000); // Poll every 3 seconds
+      return () => clearTimeout(timer);
+    }
+
+    // 3. Handle final completion via loaderData
+    if (loaderData.finalSummary) {
+      console.log(
+        "Final summary received from loader, updating state and stopping polling.",
+      );
+      // Set the final, accurate summary
+      setCurrentSummary(loaderData.finalSummary);
+      // Clear context states to stop the polling loop (and implicitly clear URL params on next clean load)
+      setBulkOpId(null);
+      setBulkOpContext(null);
+    }
+  }, [
+    bulkOpId,
+    loaderData.bulkOperationStatus,
+    loaderData.finalSummary,
+    bulkOpContext,
+    submit,
+  ]);
+
+  // Clear summary/context when filters change
+  useEffect(() => {
+    // Only clear if no job is actively running or completed (i.e., bulkOpId is null)
+    if (!bulkOpId && !loaderData.finalSummary) {
+      setCurrentSummary(null);
+      setBulkOpId(null);
+      setBulkOpContext(null);
+    }
+  }, [
+    keyword,
+    productType,
+    collectionHandle,
+    bulkOpId,
+    loaderData.finalSummary,
+  ]);
 
   const handlePreview = useCallback(() => {
-    setShowSummary(false);
-    setSummary(null);
+    setCurrentSummary(null);
+    setBulkOpId(null);
+    setBulkOpContext(null);
     const params = new URLSearchParams();
     params.set("preview", "true");
     if (keyword) params.set("keyword", keyword);
@@ -425,8 +784,7 @@ export default function AddTags() {
   }, [keyword, productType, collectionHandle, submit]);
 
   const handleApplyTag = useCallback(() => {
-    setShowSummary(false);
-    setSummary(null);
+    setCurrentSummary(null);
 
     const formData = new FormData();
     formData.append("action", "applyTag");
@@ -436,30 +794,25 @@ export default function AddTags() {
     formData.append("tagToApply", tagToApply);
 
     submit(formData, { method: "post" });
-  }, [
-    keyword,
-    productType,
-    collectionHandle,
-    tagToApply,
-    loaderData.totalCount,
-    submit,
-  ]);
+  }, [keyword, productType, collectionHandle, tagToApply, submit]);
 
   const handleClearFilters = useCallback(() => {
     setKeyword("");
     setProductType("");
     setCollectionHandle("");
     setTagToApply("");
-    setShowSummary(false);
-    setSummary(null);
+    setCurrentSummary(null);
+    setBulkOpId(null);
+    setBulkOpContext(null);
+    // Submit a clean request to clear the URL parameters entirely
     submit(new URLSearchParams(), { method: "get" });
   }, [submit]);
 
-  const totalCountDisplay = loaderData.totalCount.toLocaleString();
+  const summary = currentSummary;
 
   return (
     <s-page heading="Product Tagger">
-      {showSummary && summary && (
+      {summary && (
         <s-section>
           {loaderData.error && (
             <s-banner tone="critical">
@@ -470,46 +823,68 @@ export default function AddTags() {
 
           <s-banner
             tone={
-              summary.error
-                ? summary.updated > 0
-                  ? "warning"
-                  : "critical"
-                : "success"
+              summary.failed > 0
+                ? "critical"
+                : bulkOpId ||
+                    loaderData.bulkOperationStatus?.status === "RUNNING" ||
+                    loaderData.bulkOperationStatus?.status === "CREATED"
+                  ? "info" // Info for in-progress operations
+                  : summary.updated > 0
+                    ? "success"
+                    : "warning" // Warning for success state where nothing was updated (all skipped)
             }
           >
             <s-text>
-              {summary.error && summary.updated === 0
-                ? "Tagging Action Failed"
-                : summary.error
-                  ? "Tagging Completed with Errors"
-                  : "Tag Applied Successfully!"}
+              {summary.failed > 0
+                ? "Tagging Completed with Failures"
+                : bulkOpId ||
+                    loaderData.bulkOperationStatus?.status === "RUNNING" ||
+                    loaderData.bulkOperationStatus?.status === "CREATED"
+                  ? "Bulk Operation Processing..."
+                  : summary.updated > 0
+                    ? "Tagging Complete!"
+                    : summary.total > 0 &&
+                        summary.alreadyHadTag === summary.total
+                      ? "Tag Already Applied to All Products (Skipped)"
+                      : "Action Failed to Start or Invalid State"}
             </s-text>
+
             <s-box>
-              {summary.error && summary.updated === 0 ? (
+              {bulkOpId ||
+              loaderData.bulkOperationStatus?.status === "RUNNING" ||
+              loaderData.bulkOperationStatus?.status === "CREATED" ? (
                 <s-text>
-                  <strong>Error Details:</strong> {summary.error}
+                  Bulk operation is processing {summary.total.toLocaleString()}{" "}
+                  products in the background.
+                  {loaderData.bulkOperationStatus && (
+                    <>
+                      {" "}
+                      Status:{" "}
+                      <strong>{loaderData.bulkOperationStatus.status}</strong>
+                    </>
+                  )}
                 </s-text>
-              ) : summary.error ? (
-                <>
-                  <s-text>
-                    Tag <strong>"{summary.tag}"</strong> partially applied to{" "}
-                    {summary.total} products: <strong>{summary.updated}</strong>{" "}
-                    updated, <strong>{summary.alreadyHadTag}</strong> already
-                    had the tag (skipped), <strong>{summary.failed}</strong>{" "}
-                    failed.
-                  </s-text>
-                  <s-box>
-                    <s-text tone="critical">
-                      <strong>Error Details:</strong> {summary.error}
-                    </s-text>
-                  </s-box>
-                </>
+              ) : summary.failed > 0 || summary.tag.includes("Failed") ? (
+                <s-text>
+                  Error:{" "}
+                  <strong>
+                    {summary.failed > 0
+                      ? `${summary.failed.toLocaleString()} products failed to update.`
+                      : summary.tag}
+                  </strong>
+                </s-text>
               ) : (
                 <s-text>
                   Tag <strong>"{summary.tag}"</strong> applied to{" "}
-                  {summary.total} products: <strong>{summary.updated}</strong>{" "}
-                  updated, <strong>{summary.alreadyHadTag}</strong> already had
-                  the tag (skipped), <strong>{summary.failed}</strong> failed.
+                  {summary.total.toLocaleString()} products:
+                  <strong> {summary.updated.toLocaleString()}</strong> updated
+                  successfully,
+                  <strong>
+                    {" "}
+                    {summary.alreadyHadTag.toLocaleString()}
+                  </strong>{" "}
+                  already had the tag (skipped),
+                  <strong> {summary.failed.toLocaleString()}</strong> failed.
                 </s-text>
               )}
             </s-box>
@@ -521,16 +896,8 @@ export default function AddTags() {
         {loaderData.previewMode ? (
           <s-section heading="Preview results">
             <s-box borderRadius="base">
-              {/* <s-stack>
-                <s-badge
-                  tone={loaderData.products.length > 0 ? "success" : "info"}
-                >
-                  {totalCountDisplay}{" "}
-                  {loaderData.totalCount === 1 ? "product" : "products"} found
-                </s-badge>
-              </s-stack> */}
-
-              {loaderData.products.length === 0 ? (
+              {loaderData.products.length === 0 &&
+              loaderData.totalCount === 0 ? (
                 <s-box>
                   <s-text>No products match your filters</s-text>
                   <s-box>
@@ -545,8 +912,8 @@ export default function AddTags() {
                   <s-box>
                     <s-text>
                       Showing first {loaderData.products.length} of{" "}
-                      <strong>{totalCountDisplay}</strong> estimated matching
-                      products
+                      <strong>{loaderData.totalCount.toLocaleString()}</strong>{" "}
+                      estimated matching products
                     </s-text>
                   </s-box>
 
@@ -560,45 +927,36 @@ export default function AddTags() {
                       </s-table-header-row>
 
                       <s-table-body>
-                        {loaderData.products.map((product) => {
-                          const hasTag = product.tags.some(
-                            (tag) =>
-                              tag.toLowerCase() ===
-                              tagToApply.trim().toLowerCase(),
-                          );
-
-                          return (
-                            <s-table-row key={product.id}>
-                              <s-table-cell>{product.title}</s-table-cell>
-                              <s-table-cell>{product.handle}</s-table-cell>
-                              <s-table-cell>
-                                {product.productType || "N/A"}
-                              </s-table-cell>
-
-                              <s-table-cell>
-                                {product.tags.length > 0 ? (
-                                  <>
-                                    {product.tags.map((tag, idx) => (
-                                      <s-badge
-                                        key={idx}
-                                        tone={
-                                          tag.toLowerCase() ===
-                                          tagToApply.trim().toLowerCase()
-                                            ? "success"
-                                            : undefined
-                                        }
-                                      >
-                                        {tag}
-                                      </s-badge>
-                                    ))}
-                                  </>
-                                ) : (
-                                  <s-text>No tags</s-text>
-                                )}
-                              </s-table-cell>
-                            </s-table-row>
-                          );
-                        })}
+                        {loaderData.products.map((product) => (
+                          <s-table-row key={product.id}>
+                            <s-table-cell>{product.title}</s-table-cell>
+                            <s-table-cell>{product.handle}</s-table-cell>
+                            <s-table-cell>
+                              {product.productType || "N/A"}
+                            </s-table-cell>
+                            <s-table-cell>
+                              {product.tags.length > 0 ? (
+                                <>
+                                  {product.tags.map((tag, idx) => (
+                                    <s-badge
+                                      key={idx}
+                                      tone={
+                                        tag.toLowerCase() ===
+                                        tagToApply.trim().toLowerCase()
+                                          ? "success"
+                                          : undefined
+                                      }
+                                    >
+                                      {tag}
+                                    </s-badge>
+                                  ))}
+                                </>
+                              ) : (
+                                <s-text>No tags</s-text>
+                              )}
+                            </s-table-cell>
+                          </s-table-row>
+                        ))}
                       </s-table-body>
                     </s-table>
                   </s-section>
@@ -614,41 +972,14 @@ export default function AddTags() {
             >
               <p>
                 Begin by adding search filters to define which products should
-                automatically receive your new tags.
+                automatically receive your new tags. This uses Shopify's bulk
+                operations API for efficient processing.
               </p>
             </EmptyState>
           </LegacyCard>
         )}
-
-        {/* Initial State */}
-        {/* {!loaderData.previewMode && !loaderData.error && (
-          <s-section>
-            <s-section>
-              <s-box
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <s-text>Ready to tag products</s-text>
-                <s-box>
-                  <s-text>
-                    Set your filters and click <strong>Preview Matches</strong>{" "}
-                    to see which products will be tagged.
-                  </s-text>
-                </s-box>
-                <s-box>
-                  <s-text variant="bodyMd">
-                    The system supports cursor-based pagination and can handle
-                    1,000+ products efficiently.
-                  </s-text>
-                </s-box>
-              </s-box>
-            </s-section>
-          </s-section>
-        )} */}
       </s-section>
 
-      {/* Filters Card */}
       <s-section slot="aside" heading="Filter Products">
         <s-text-field
           label="Search by keyword"
@@ -666,8 +997,8 @@ export default function AddTags() {
         />
         <s-text-field
           label="Search by collection"
-          // value={collectionHandle}
-          // onChange={(e) => setCollectionHandle(e.currentTarget.value)}
+          value={collectionHandle}
+          onChange={(e) => setCollectionHandle(e.currentTarget.value)}
           placeholder="e.g., summer-collection"
           disabled={isSubmitting}
         />
@@ -689,7 +1020,6 @@ export default function AddTags() {
         </s-button>
       </s-section>
 
-      {/* Tag Card */}
       <s-section slot="aside" heading="Apply Tag">
         <s-text-field
           value={tagToApply}
@@ -703,65 +1033,44 @@ export default function AddTags() {
           loading={isApplyingTag}
           disabled={
             !loaderData.previewMode ||
-            loaderData.products.length === 0 ||
+            loaderData.totalCount === 0 ||
             isSubmitting
           }
         >
           {isApplyingTag
-            ? "Applying Tag..."
-            : `Apply Tag (${totalCountDisplay} Products)`}
+            ? "Starting Bulk Operation..."
+            : `Apply Tag (${loaderData.totalCount.toLocaleString()} Products)`}
         </s-button>
-        {/* <img src="https://cdn.shopify.com/s/assets/admin/checkout/settings-customizecart-705f57c725ac05be5a34ec20c05b94298cb8afd10aac7bd9c7ad02030f48cfa0.svg" /> */}
       </s-section>
 
-      {/* <s-layout-section>
-          <s-section heading="Tag Configuration">
-           
+      <s-modal id="modal" heading="Confirm Bulk Tag Operation">
+        <s-paragraph>
+          Are you sure you want to apply the tag "{tagToApply.trim()}" to all{" "}
+          {loaderData.totalCount.toLocaleString()} matched products using bulk
+          operations?
+        </s-paragraph>
+        <s-paragraph>
+          This will run in the background and may take a few minutes to
+          complete.
+        </s-paragraph>
 
-              {!filtersSet && (
-                <s-box paddingBlockStart="300">
-                  <s-banner tone="info">
-                    <s-text variant="bodyMd">
-                      Add at least one filter above to preview matching products
-                    </s-text>
-                  </s-banner>
-                </s-box>
-              )}
-
-    
-            </s-box>
-          </s-section>
-        </s-layout-section> */}
-      <>
-        <s-modal id="modal" heading="Details">
-          <s-paragraph>
-            `Are you sure you want to apply the tag "{tagToApply.trim()}" to all{" "}
-            {totalCountText} matched products?`,
-          </s-paragraph>
-
-          <s-button
-            slot="secondary-actions"
-            commandFor="modal"
-            command="--hide"
-          >
-            Cancel
-          </s-button>
-          <s-button
-            slot="primary-action"
-            variant="primary"
-            commandFor="modal"
-            command="--hide"
-            onClick={handleApplyTag}
-          >
-            Confirm
-          </s-button>
-        </s-modal>
-      </>
+        <s-button slot="secondary-actions" commandFor="modal" command="--hide">
+          Cancel
+        </s-button>
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          commandFor="modal"
+          command="--hide"
+          onClick={handleApplyTag}
+        >
+          Confirm
+        </s-button>
+      </s-modal>
     </s-page>
   );
 }
 
-// Shopify needs React Router to catch some thrown responses, so that their headers are included in the response.
 export function ErrorBoundary() {
   return boundary.error(useRouteError());
 }
