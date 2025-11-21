@@ -14,6 +14,11 @@ import { authenticate } from "../shopify.server";
 const FETCH_PAGE_LIMIT = 50;
 const PREVIEW_COUNT = 10;
 
+type GraphQLResponse = {
+  data?: any;
+  errors?: { message: string; locations: any }[]; // Define the expected errors structure
+};
+
 interface FilterState {
   keyword: string;
   productType: string;
@@ -112,7 +117,7 @@ async function fetchProductsIteratively({
       const response = await admin.graphql(query, {
         variables: { query: queryString, cursor },
       });
-      const data = await response.json();
+      const data = (await response.json()) as GraphQLResponse;
 
       if (data.errors || data.data?.products === undefined) {
         console.error("GraphQL Errors during paginated fetch:", data.errors);
@@ -192,7 +197,7 @@ export const loader = async ({
     const response = await admin.graphql(query, {
       variables: { query: queryString },
     });
-    const data = await response.json();
+    const data = (await response.json()) as GraphQLResponse;
 
     if (data.errors) {
       console.error("GraphQL errors in loader:", data.errors);
@@ -333,7 +338,7 @@ export const action = async ({
             },
           });
 
-          const updateData = await updateResponse.json();
+          const updateData = (await updateResponse.json()) as GraphQLResponse;
 
           if (updateData.errors) {
             console.error(
