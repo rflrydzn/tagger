@@ -74,7 +74,7 @@ redirect_urls = [ "https://app-tagger.myshopify/api/auth" ]
 npm run dev
 ```
 
-The CLI will open a browser window to install the app on your development store.
+The CLI will open a browser window to authenticate and install the app on your development store.
 
 ---
 
@@ -138,11 +138,11 @@ The CLI will open a browser window to install the app on your development store.
 - Follows `hasNextPage` and `cursor`
 - Includes delay to avoid rate limits
 
-### Bulk Operations
+### bulkOperationRunMutation
 
-- Offloads all mutations to Shopify background worker
-- Avoids API throttling
-- Suitable for very large catalogs
+- Passes all mutations to Shopify background worker
+- Runs async to prevent Error 524 (120s of no HTTP response)
+- Efficient and fast bulk tagging instead of synchronus one by one
 
 ---
 
@@ -164,18 +164,24 @@ Ensures re-running the same tag operation is **safe**.
 ```
 /app
   /routes
+    /addTags
+      /components
+        ConfirmationModa.tsx
+        EmptyState.tsx
+        FilterSidebar.tsx
+        PreviewTable.tsx
+        SummaryBanner.tsx
+        TagSidebar.tsx
+      app.server.ts
+      bulkResultsProcessor.ts
+      loader.server.ts
+      queryBuilder.ts
+      shopifyApi.ts
+      stateManager.ts
     app.addTags.tsx
-    loader.server.ts
-    action.server.ts
-  /utils
-    queryBuilder.ts
-    shopifyApi.ts
-    bulkResultsProcessor.ts
-    stateManager.ts
+  /types
+    admin.generated.d.ts
+    admin.types.d.ts
+    types.ts
+
 ```
-
----
-
-## 📜 License
-
-MIT License.
