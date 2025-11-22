@@ -43,7 +43,7 @@ Update `shopify.app.toml`:
 ```toml
 client_id = "YOUR_API_KEY"
 name = "tagger"
-application_url = "https://app-tagger.myshopify.com"
+application_url = "https://example.myshopify.com"
 embedded = true
 
 [build]
@@ -65,7 +65,7 @@ api_version = "2026-01"
 scopes = "read_products,write_products"
 
 [auth]
-redirect_urls = [ "https://app-tagger.myshopify/api/auth" ]
+redirect_urls = [ "https://example.myshopify/api/auth" ]
 ```
 
 ### 4. Run the Development Server
