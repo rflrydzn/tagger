@@ -1,4 +1,4 @@
-# 🏷️ Shopify Product Tagger App
+# 🏷️ Shopify Product Tagger App (Add/Remove)
 
 A Shopify-embedded application that allows merchants to **filter products** and **bulk-apply tags** using the Shopify **Bulk Operations API**, designed for speed, safety, and idempotency.
 
@@ -91,9 +91,9 @@ The CLI will open a browser window to authenticate and install the app on your d
 - Total matched product count
 - Preview of first 10 products
 
-### 🏷️ Bulk Tagging
+### 🏷️ Bulk Add/Remove Tag
 
-- Apply a custom tag to thousands of products
+- Apply/Remove a custom tag to thousands of products
 - Uses Shopify Bulk Operations API
 - Idempotent: skips products already containing the tag
 - Safe to re-run
