@@ -1,4 +1,4 @@
-import { FilterState } from "./types";
+import { FilterState } from "../../types/types";
 
 export const buildProductQuery = ({
   keyword,

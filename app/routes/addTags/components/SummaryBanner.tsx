@@ -1,4 +1,4 @@
-import { BulkOperationStatus, Summary } from "../types";
+import { BulkOperationStatus, Summary } from "../../../types/types";
 
 type SummaryBannerProps = {
   summary: Summary;

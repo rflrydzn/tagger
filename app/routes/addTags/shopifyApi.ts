@@ -1,27 +1,9 @@
-import type {
-  ActionFunctionArgs,
-  HeadersFunction,
-  LoaderFunctionArgs,
-} from "react-router";
-import { useLoaderData, useRouteError } from "react-router";
-import { boundary } from "@shopify/shopify-app-react-router/server";
-import { useState, useCallback, useEffect } from "react";
-import { useSubmit, useNavigation, useActionData } from "react-router";
-import { LegacyCard, EmptyState, Button } from "@shopify/polaris";
-
-import { authenticate } from "../../shopify.server";
-
 import {
-  GraphQLResponse,
-  FilterState,
   Product,
-  Summary,
   BulkOperationStatus,
-  LoaderData,
-  ActionData,
-  FETCH_PAGE_LIMIT,
-  PREVIEW_COUNT,
-} from "app/routes/addTags/types";
+  BulkOperation,
+} from "app/types/admin.types";
+import { FETCH_PAGE_LIMIT, GraphQLResponse } from "app/types/types";
 
 export async function fetchProductsIteratively({
   admin,
@@ -91,7 +73,7 @@ export async function fetchProductsIteratively({
 
 export async function checkBulkOperationStatus(
   admin: any,
-): Promise<BulkOperationStatus | null> {
+): Promise<BulkOperation | null> {
   const query = `
     #graphql
     query {
@@ -108,14 +90,14 @@ export async function checkBulkOperationStatus(
   `;
 
   const response = await admin.graphql(query);
-  const data = (await response.json()) as GraphQLResponse;
+  const data = await response.json();
 
   if (data.data?.currentBulkOperation) {
     const op = data.data.currentBulkOperation;
     return {
-      id: op.id,
-      status: op.status,
-      objectCount: parseInt(op.objectCount, 10),
+      id: op.id as string,
+      status: op.status as BulkOperationStatus,
+      objectCount: parseInt(op.objectCount as string, 10),
       url: op.url,
     };
   }

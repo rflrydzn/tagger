@@ -1,4 +1,4 @@
-import { Product } from "../types";
+import { Product } from "../../../types/types";
 type PreviewTableProps = {
   products: Product[];
   totalCount: number;

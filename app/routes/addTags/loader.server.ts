@@ -6,7 +6,7 @@ import {
   BulkOperationStatus,
   LoaderData,
   PREVIEW_COUNT,
-} from "app/routes/addTags/types";
+} from "app/types/types";
 
 import { authenticate } from "../../shopify.server";
 

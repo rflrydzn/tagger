@@ -4,7 +4,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useState, useCallback, useEffect } from "react";
 import { useSubmit, useNavigation, useActionData } from "react-router";
 import { getInitialStates } from "./addTags/stateManager";
-import { Summary } from "app/routes/addTags/types";
+import { Summary } from "app/types/types";
 import { loader } from "./addTags/loader.server";
 import { action } from "./addTags/action.server";
 import ConfirmationModal from "./addTags/components/ConfirmationModal";

@@ -1,4 +1,4 @@
-import { LoaderData, Summary } from "./types";
+import { LoaderData, Summary } from "../../types/types";
 
 export const getInitialStates = (
   loaderData: LoaderData,

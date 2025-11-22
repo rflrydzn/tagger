@@ -4,7 +4,7 @@ import {
   FilterState,
   Summary,
   ActionData,
-} from "app/routes/addTags/types";
+} from "app/types/types";
 import { authenticate } from "../../shopify.server";
 import { fetchProductsIteratively } from "./shopifyApi";
 import { buildProductQuery } from "./queryBuilder";

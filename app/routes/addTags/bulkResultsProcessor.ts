@@ -1,4 +1,4 @@
-import { Summary } from "./types";
+import { Summary } from "../../types/types";
 
 export async function processBulkOperationResults({
   url,
