@@ -1,5 +1,7 @@
 type ModalProps = {
   tagToApply: string;
+  actionType: "apply" | "remove";
+
   totalCount: number;
   onConfirm: () => void;
 };
@@ -8,12 +10,14 @@ export default function ConfirmationModal({
   tagToApply,
   totalCount,
   onConfirm,
+  actionType,
 }: ModalProps) {
   return (
     <s-modal id="modal" heading="Confirm Bulk Tag Operation">
       <s-paragraph>
-        Are you sure you want to apply the tag "{tagToApply.trim()}" to all{" "}
-        {totalCount.toLocaleString()} matched products using bulk operations?
+        Are you sure you want to {actionType === "apply" ? "add" : "remove"} the
+        tag "{tagToApply.trim()}" to all {totalCount.toLocaleString()} matched
+        products using bulk operations?
       </s-paragraph>
       <s-paragraph>
         This will run in the background and may take a few minutes to complete.

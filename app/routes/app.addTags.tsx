@@ -32,6 +32,7 @@ export default function AddTags() {
     loaderData.filters.collectionHandle,
   );
   const [tagToApply, setTagToApply] = useState("");
+  const [actionType, setActionType] = useState<"apply" | "remove">("apply");
 
   const [currentSummary, setCurrentSummary] = useState<Summary | null>(
     initialSummary,
@@ -43,6 +44,8 @@ export default function AddTags() {
   const isSubmitting = navigation.state === "submitting";
   const isApplyingTag =
     isSubmitting && navigation.formData?.get("action") === "applyTag";
+  const isRemovingTag =
+    isSubmitting && navigation.formData?.get("action") === "removeTag";
   const isPreviewing =
     isSubmitting && navigation.formData?.get("action") === "preview";
 
@@ -78,6 +81,8 @@ export default function AddTags() {
       }
     }
   }, [actionData]);
+
+  useEffect(() => console.log("act", actionType), [actionType]);
 
   //  poll for status
   useEffect(() => {
@@ -157,7 +162,7 @@ export default function AddTags() {
     setCurrentSummary(null);
 
     const formData = new FormData();
-    formData.append("action", "applyTag");
+    formData.append("action", `${actionType}Tag`);
     formData.append("keyword", keyword);
     formData.append("productType", productType);
     formData.append("collectionHandle", collectionHandle);
@@ -195,6 +200,7 @@ export default function AddTags() {
             summary={summary}
             bulkOperationStatus={loaderData?.bulkOperationStatus}
             bulkOpId={bulkOpId}
+            actionType={actionType}
           />
         </s-section>
       )}
@@ -249,12 +255,16 @@ export default function AddTags() {
         totalCount={loaderData.totalCount}
         isApplyingTag={isApplyingTag}
         previewMode={loaderData.previewMode}
+        onActionTypeChange={(chosenAction) => setActionType(chosenAction)}
+        actionType={actionType}
+        isRemovingTag={isRemovingTag}
       />
 
       <ConfirmationModal
         tagToApply={tagToApply}
         totalCount={loaderData.totalCount}
         onConfirm={handleApplyTag}
+        actionType={actionType}
       />
     </s-page>
   );

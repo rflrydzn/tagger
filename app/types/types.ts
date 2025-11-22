@@ -20,19 +20,21 @@ export interface Product {
   tags: string[];
 }
 
-export interface Summary {
+export type Summary = {
   updated: number;
-  alreadyHadTag: number;
+  alreadyHadTag?: number;
+  didNotHaveTag?: number;
   failed: number;
   total: number;
   tag: string;
-}
+  action?: "apply" | "remove";
+};
 
 export interface BulkOperationStatus {
   id: string;
   status: string;
   objectCount: number;
-  url: string | null;
+  url?: string | null;
 }
 
 export interface LoaderData {

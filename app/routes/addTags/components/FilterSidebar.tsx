@@ -24,6 +24,15 @@ export default function FilterSidebar({
   onPreview,
   onClearFilters,
 }: FilterSidebarProps) {
+  const isFilterActive =
+    keyword.trim().length > 0 ||
+    productType.trim().length > 0 ||
+    collectionHandle.trim().length > 0;
+
+  // 2. The button should be disabled if:
+  //    a) No filter is currently active (isFilterActive is false) AND no operation is running, OR
+  //    b) An operation (isSubmitting or isApplyingTag) is currently running.
+  const isPreviewDisabled = isSubmitting || isApplyingTag || !isFilterActive;
   return (
     <s-section slot="aside" heading="Filter Products">
       <s-text-field
@@ -51,7 +60,7 @@ export default function FilterSidebar({
         variant="primary"
         onClick={onPreview}
         loading={isPreviewing}
-        disabled={isApplyingTag}
+        disabled={isPreviewDisabled}
       >
         Preview Matches
       </s-button>

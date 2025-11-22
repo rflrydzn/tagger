@@ -4,11 +4,13 @@ type SummaryBannerProps = {
   summary: Summary;
   bulkOperationStatus: BulkOperationStatus | undefined;
   bulkOpId: string | null;
+  actionType: "apply" | "remove";
 };
 export default function SummaryBanner({
   summary,
   bulkOperationStatus,
   bulkOpId,
+  actionType,
 }: SummaryBannerProps) {
   return (
     <s-banner
@@ -63,13 +65,19 @@ export default function SummaryBanner({
           </s-text>
         ) : (
           <s-text>
-            Tag <strong>"{summary.tag}"</strong> applied to{" "}
+            Tag <strong>"{summary.tag}"</strong>{" "}
+            {actionType === "apply" ? "applied" : "removed"} to{" "}
             {summary.total.toLocaleString()} products:
             <strong> {summary.updated.toLocaleString()}</strong> updated
             successfully,
-            <strong> {summary.alreadyHadTag.toLocaleString()}</strong> already
-            had the tag (skipped),
-            <strong> {summary.failed.toLocaleString()}</strong> failed.
+            <strong>
+              {" "}
+              {summary.alreadyHadTag?.toLocaleString()}
+            </strong> already{" "}
+            {actionType === "apply"
+              ? "had the tag (skipped)"
+              : "dont have the tag"}
+            ,<strong> {summary.failed.toLocaleString()}</strong> failed.
           </s-text>
         )}
       </s-box>
